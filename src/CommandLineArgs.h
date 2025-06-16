@@ -1,16 +1,20 @@
-#ifndef COMMANDLINEARGS_H
-#define COMMANDLINEARGS_H
+#ifndef COMMAND_LINE_ARGS_H
+#define COMMAND_LINE_ARGS_H
 
 #include <string>
 #include <vector>
 
-struct CommandLineArgs {
+class CommandLineArgs {
+public:
+    CommandLineArgs(int argc, char* argv[]);
     std::string layout_file;
-    int mask_layer_number;
-    std::vector<int> input_layers_numbers;
+    int mask_layer_number = -1;
+    int mask_layer_datatype = -1;
+    std::vector<std::pair<int, int>> input_layers;
     std::string db_name;
-    CommandLineArgs();
-    bool isValid() const;
+private:
+    void parse(int argc, char* argv[]);
+    std::vector<std::pair<int, int>> parseInputLayers(const std::string& input_layers_str);
 };
 
-#endif // COMMANDLINEARGS_H
+#endif

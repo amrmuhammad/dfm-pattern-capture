@@ -1,149 +1,292 @@
+#include "Geometry.h"
 #include <fstream>
-#include <string>
-#include <vector>
-#include <cstdint>
-#include <cstring>
 #include <iostream>
+#include <vector>
+#include <string>
+#include <cmath>
+#include <iomanip>
+#include <Logging.h>
 
-class GDSIIWriter {
-public:
-    GDSIIWriter(const std::string& filename) : file_(filename, std::ios::binary) {
-        if (!file_.is_open()) {
-            throw std::runtime_error("Cannot open file: " + filename);
-        }
+// Write a 16-bit unsigned integer
+void write_uint16(std::ofstream& file, uint16_t value) {
+    LOG_FUNCTION()
+    file.put(static_cast<char>(value >> 8));
+    file.put(static_cast<char>(value & 0xFF));
+    if (!file) std::cerr << "Error writing uint16 at " << file.tellp() << std::endl;
+}
+
+// Write a 32-bit integer
+void write_int32(std::ofstream& file, int32_t value) {
+    LOG_FUNCTION()
+    file.put(static_cast<char>(value >> 24));
+    file.put(static_cast<char>((value >> 16) & 0xFF));
+    file.put(static_cast<char>((value >> 8) & 0xFF));
+    file.put(static_cast<char>(value & 0xFF));
+    if (!file) std::cerr << "Error writing int32 at " << file.tellp() << std::endl;
+}
+
+// Write a GDSII double
+void write_double(std::ofstream& file, double value) {
+    LOG_FUNCTION()
+    bool negative = value < 0;
+    if (negative) value = -value;
+    int exponent = 0;
+    while (value > 1.0 && exponent < 64) {
+        value /= 16.0;
+        exponent++;
+    }
+    while (value < 0.0625 && exponent > -64) {
+        value *= 16.0;
+        exponent--;
+    }
+    uint64_t mantissa = static_cast<uint64_t>(value * (1ULL << 56));
+    uint8_t sign_exp = (negative ? 0x80 : 0) | (static_cast<uint8_t>(exponent + 64) & 0x7F);
+    file.put(static_cast<char>(sign_exp));
+    for (int i = 6; i >= 0; --i) {
+        file.put(static_cast<char>((mantissa >> (i * 8)) & 0xFF));
+    }
+    if (!file) std::cerr << "Error writing double at " << file.tellp() << std::endl;
+}
+
+// Write a string with specified record type
+void write_string(std::ofstream& file, const std::string& str, uint8_t record_type, size_t& byte_pos) {
+    LOG_FUNCTION()
+    size_t len = str.size();
+    if (len % 2) len++; // Pad to even length
+    write_uint16(file, static_cast<uint16_t>(len + 4));
+    file.put(record_type); // LIBNAME (0x02) or STRNAME (0x06)
+    file.put(0x06); // ASCII data type
+    file.write(str.c_str(), str.size());
+    if (str.size() % 2) file.put(0);
+    byte_pos += len + 4;
+    std::cout << "Wrote string record type 0x" << std::hex << (int)record_type
+              << " at " << std::dec << (byte_pos - (len + 4)) << ": " << str << std::endl;
+    if (!file) std::cerr << "Error writing string at " << file.tellp() << std::endl;
+}
+
+// Write a polygon
+void write_polygon(std::ofstream& file, const Polygon& poly, int layer_number, int datatype, double unit_scale, size_t& byte_pos, size_t poly_index) {
+    LOG_FUNCTION()
+    if (!poly.isValid()) {
+        std::cerr << "Error: Invalid polygon " << poly_index << " for layer " << layer_number << ":" << datatype << std::endl;
+        return;
     }
 
-    ~GDSIIWriter() {
-        if (file_.is_open()) {
-            file_.close();
-        }
+    std::cout << "Writing polygon " << poly_index << " to layer " << layer_number << ":" << datatype << std::endl;
+
+    // BOUNDARY
+    write_uint16(file, 4);
+    file.put(0x08);
+    file.put(0x00);
+    byte_pos += 4;
+    std::cout << "Wrote BOUNDARY at " << byte_pos - 4 << std::endl;
+
+    // LAYER
+    write_uint16(file, 6);
+    file.put(0x0D);
+    file.put(0x02);
+    write_uint16(file, static_cast<uint16_t>(layer_number));
+    byte_pos += 6;
+    std::cout << "Wrote LAYER " << layer_number << " at " << byte_pos - 6 << std::endl;
+
+    // DATATYPE
+    write_uint16(file, 6);
+    file.put(0x0E);
+    file.put(0x02);
+    write_uint16(file, static_cast<uint16_t>(datatype));
+    byte_pos += 6;
+    std::cout << "Wrote DATATYPE " << datatype << " at " << byte_pos - 6 << std::endl;
+
+    // XY
+    size_t num_points = poly.points.size() + 1;
+    uint16_t xy_length = static_cast<uint16_t>(4 + 8 * num_points);
+    write_uint16(file, xy_length);
+    file.put(0x10);
+    file.put(0x03);
+    byte_pos += 4;
+    std::cout << "Wrote XY header at " << byte_pos - 4 << " (length=" << xy_length << ", points=" << num_points << ")" << std::endl;
+    for (size_t i = 0; i < poly.points.size(); ++i) {
+        int32_t x = static_cast<int32_t>(std::round(poly.points[i].x / unit_scale));
+        int32_t y = static_cast<int32_t>(std::round(poly.points[i].y / unit_scale));
+        write_int32(file, x);
+        write_int32(file, y);
+        byte_pos += 8;
+        std::cout << "Wrote point " << i << " (" << x << "," << y << ") at " << byte_pos - 8 << std::endl;
+    }
+    int32_t x0 = static_cast<int32_t>(std::round(poly.points[0].x / unit_scale));
+    int32_t y0 = static_cast<int32_t>(std::round(poly.points[0].y / unit_scale));
+    write_int32(file, x0);
+    write_int32(file, y0);
+    byte_pos += 8;
+    std::cout << "Wrote closing point (" << x0 << "," << y0 << ") at " << byte_pos - 8 << std::endl;
+
+    // ENDEL
+    write_uint16(file, 4);
+    file.put(0x11);
+    file.put(0x00);
+    byte_pos += 4;
+    std::cout << "Wrote ENDEL at " << byte_pos - 4 << std::endl;
+
+    std::cout << "Finished polygon " << poly_index << " (area=" << poly.area << ")" << std::endl;
+}
+
+// Create a rectangle
+Polygon create_rectangle(double x, double y, double width, double height) {
+    Polygon poly;
+    poly.points = {
+        {x, y}, {x + width, y}, {x + width, y + height}, {x, y + height}
+    };
+    poly.calculateArea();
+    poly.calculatePerimeter();
+    return poly;
+}
+
+// Create a triangle
+Polygon create_triangle(double x, double y, double size, int offset) {
+    Polygon poly;
+    double dx = offset * size * 0.1;
+    poly.points = {
+        {x + dx, y + dx}, {x + size + dx, y + dx}, {x + size / 2 + dx, y + size + dx}
+    };
+    poly.calculateArea();
+    poly.calculatePerimeter();
+    return poly;
+}
+
+int main(int argc, char* argv[]) {
+    LOG_FUNCTION()
+    
+    std::string output_file = "test_layers.gds";
+    if (argc > 1) {
+        output_file = argv[1];
     }
 
-    void writeTestGDS() {
-        // Write HEADER (version 3)
-        writeRecord(0x00, 0x02, {0x00, 0x03});
-
-        // Write BGNLIB
-        writeRecord(0x01, 0x02, std::vector<uint8_t>(12, 0));
-
-        // Write LIBNAME
-        writeStringRecord(0x02, "TEST_LIB");
-
-        // Write UNITS (1 user unit = 1 micron, 1 db unit = 1 nm)
-        std::vector<uint8_t> units_data;
-        auto user_unit = doubleToGDSIIReal(1.0e-6);
-        auto db_unit = doubleToGDSIIReal(1.0e-9);
-        units_data.insert(units_data.end(), user_unit.begin(), user_unit.end());
-        units_data.insert(units_data.end(), db_unit.begin(), db_unit.end());
-        writeRecord(0x03, 0x05, units_data);
-
-        // Write BGNSTR for TEST_CELL
-        writeRecord(0x05, 0x02, std::vector<uint8_t>(12, 0));
-
-        // Write STRNAME
-        writeStringRecord(0x06, "TEST_CELL");
-
-        // Write BOUNDARY for Layer 1 rectangle (0,0) to (100,100)
-        writeBoundary(1, {0, 0, 100, 0, 100, 100, 0, 100, 0, 0});
-
-        // Write BOUNDARY for Layer 2 rectangle (50,50) to (150,150)
-        writeBoundary(2, {50, 50, 150, 50, 150, 150, 50, 150, 50, 50});
-
-        // Write ENDSTR
-        writeRecord(0x07, 0x00, {});
-
-        // Write ENDLIB
-        writeRecord(0x04, 0x00, {});
-    }
-
-private:
-    std::ofstream file_;
-
-    void writeRecord(uint8_t record_type, uint8_t data_type, const std::vector<uint8_t>& data) {
-        uint16_t length = static_cast<uint16_t>(4 + data.size());
-        write_uint16(length);
-        file_.put(static_cast<char>(record_type));
-        file_.put(static_cast<char>(data_type));
-        file_.write(reinterpret_cast<const char*>(data.data()), data.size());
-    }
-
-    void writeStringRecord(uint8_t record_type, const std::string& str) {
-        std::vector<uint8_t> data(str.begin(), str.end());
-        if (data.size() % 2 != 0) {
-            data.push_back(0); // Pad to even length
-        }
-        writeRecord(record_type, 0x06, data);
-    }
-
-    void write_uint16(uint16_t value) {
-        file_.put(static_cast<char>((value >> 8) & 0xFF));
-        file_.put(static_cast<char>(value & 0xFF));
-    }
-
-    void write_int32(int32_t value) {
-        file_.put(static_cast<char>((value >> 24) & 0xFF));
-        file_.put(static_cast<char>((value >> 16) & 0xFF));
-        file_.put(static_cast<char>((value >> 8) & 0xFF));
-        file_.put(static_cast<char>(value & 0xFF));
-    }
-
-    std::vector<uint8_t> doubleToGDSIIReal(double value) {
-        std::vector<uint8_t> bytes(8, 0);
-        if (value == 0) return bytes;
-
-        bool negative = value < 0;
-        value = std::abs(value);
-        int exponent = 0;
-        // Normalize value to [0.0625, 1.0) for GDSII real
-        while (value >= 1.0) {
-            value /= 16.0;
-            exponent++;
-        }
-        while (value < 0.0625 && value != 0.0) {
-            value *= 16.0;
-            exponent--;
-        }
-        // Use 56-bit mantissa (shift by 56 bits, but store only 24 significant bits)
-        uint64_t mantissa = static_cast<uint64_t>(value * (1ULL << 56));
-        uint8_t sign_exp = (negative ? 0x80 : 0) | static_cast<uint8_t>(exponent + 64);
-
-        bytes[0] = sign_exp;
-        for (int i = 1; i < 8; ++i) {
-            bytes[i] = (mantissa >> (56 - i * 8)) & 0xFF;
-        }
-        return bytes;
-    }
-
-    void writeBoundary(int layer, const std::vector<int32_t>& coords) {
-        writeRecord(0x08, 0x00, {});
-        std::vector<uint8_t> layer_data(4);
-        layer_data[0] = (layer >> 24) & 0xFF;
-        layer_data[1] = (layer >> 16) & 0xFF;
-        layer_data[2] = (layer >> 8) & 0xFF;
-        layer_data[3] = layer & 0xFF;
-        writeRecord(0x0D, 0x02, layer_data);
-        writeRecord(0x0E, 0x02, {0, 0, 0, 0});
-        std::vector<uint8_t> xy_data(coords.size() * 4);
-        for (size_t i = 0; i < coords.size(); ++i) {
-            int32_t val = coords[i] * 1000; // Scale to database units (1 nm)
-            xy_data[i * 4 + 0] = (val >> 24) & 0xFF;
-            xy_data[i * 4 + 1] = (val >> 16) & 0xFF;
-            xy_data[i * 4 + 2] = (val >> 8) & 0xFF;
-            xy_data[i * 4 + 3] = val & 0xFF;
-        }
-        writeRecord(0x10, 0x02, xy_data);
-        writeRecord(0x11, 0x00, {});
-    }
-};
-
-int main() {
-    try {
-        GDSIIWriter writer("test.gds");
-        writer.writeTestGDS();
-        std::cout << "Successfully generated test.gds" << std::endl;
-    } catch (const std::exception& e) {
-        std::cerr << "Error: " << e.what() << std::endl;
+    std::ofstream file(output_file, std::ios::binary);
+    if (!file.is_open()) {
+        std::cerr << "Error: Cannot open output file " << output_file << std::endl;
         return 1;
     }
+
+    size_t byte_pos = 0;
+
+    // GDSII parameters
+    double user_unit = 1e-6; // 1 micron
+    double db_unit = 1e-9;   // 1 nanometer
+    double unit_scale = db_unit / user_unit; // 1e-3
+
+    // HEADER
+    write_uint16(file, 6);
+    file.put(0x00);
+    file.put(0x02);
+    write_uint16(file, 600);
+    byte_pos += 6;
+    std::cout << "Wrote HEADER at 0" << std::endl;
+
+    // BGNLIB
+    write_uint16(file, 28);
+    file.put(0x01);
+    file.put(0x02);
+    for (int i = 0; i < 12; ++i) write_uint16(file, 2025);
+    byte_pos += 28;
+    std::cout << "Wrote BGNLIB at 6" << std::endl;
+
+    // LIBNAME
+    write_string(file, "TESTLIB", 0x02, byte_pos);
+    std::cout << "Wrote LIBNAME at 34" << std::endl;
+
+    // UNITS
+    write_uint16(file, 20);
+    file.put(0x03);
+    file.put(0x05);
+    write_double(file, user_unit);
+    write_double(file, db_unit);
+    byte_pos += 20;
+    std::cout << "Wrote UNITS at 46" << std::endl;
+
+    // BGNSTR
+    write_uint16(file, 28);
+    file.put(0x05);
+    file.put(0x02);
+    for (int i = 0; i < 12; ++i) write_uint16(file, 2025);
+    byte_pos += 28;
+    std::cout << "Wrote BGNSTR at 66" << std::endl;
+
+    // STRNAME
+    write_string(file, "TESTCELL", 0x06, byte_pos);
+    std::cout << "Wrote STRNAME at 94" << std::endl;
+
+    // Layers and polygons (scaled down by 1000x)
+    std::vector<std::pair<int, int>> layers = {{66, 20}, {67, 20}, {68, 20}, {69, 20}};
+    std::vector<std::vector<Polygon>> layer_polygons(4);
+
+    // Layer 66:20 - 3 rectangles
+    layer_polygons[0] = {
+        create_rectangle(1.0, 1.0, 2.0, 2.0),
+        create_rectangle(4.0, 1.0, 2.0, 2.0),
+        create_rectangle(7.0, 1.0, 2.0, 2.0)
+    };
+
+    // Layer 67:20 - 6 rectangles
+    layer_polygons[1] = {
+        create_rectangle(1.2, 1.2, 0.6, 0.6),
+        create_rectangle(1.8, 1.8, 0.6, 0.6),
+        create_rectangle(4.2, 1.2, 0.6, 0.6),
+        create_rectangle(4.8, 1.8, 0.6, 0.6),
+        create_rectangle(7.2, 1.2, 0.6, 0.6),
+        create_rectangle(7.8, 1.8, 0.6, 0.6)
+    };
+
+    // Layer 68:20 - 9 triangles
+    layer_polygons[2] = {
+        create_triangle(1.2, 1.2, 0.4, 0),
+        create_triangle(1.6, 1.2, 0.4, 1),
+        create_triangle(1.2, 1.6, 0.4, 2),
+        create_triangle(4.2, 1.2, 0.4, 0),
+        create_triangle(4.6, 1.2, 0.4, 1),
+        create_triangle(4.2, 1.6, 0.4, 2),
+        create_triangle(7.2, 1.2, 0.4, 0),
+        create_triangle(7.6, 1.2, 0.4, 1),
+        create_triangle(7.2, 1.6, 0.4, 2)
+    };
+
+    // Layer 69:20 - 6 rectangles
+    layer_polygons[3] = {
+        create_rectangle(1.4, 1.4, 0.4, 0.4),
+        create_rectangle(2.0, 1.4, 0.4, 0.4),
+        create_rectangle(4.4, 1.4, 0.4, 0.4),
+        create_rectangle(5.0, 1.4, 0.4, 0.4),
+        create_rectangle(7.4, 1.4, 0.4, 0.4),
+        create_rectangle(8.0, 1.4, 0.4, 0.4)
+    };
+
+    // Write polygons
+    size_t poly_index = 0;
+    for (size_t i = 0; i < layers.size(); ++i) {
+        for (const auto& poly : layer_polygons[i]) {
+            write_polygon(file, poly, layers[i].first, layers[i].second, unit_scale, byte_pos, poly_index++);
+        }
+    }
+
+    // ENDSTR
+    write_uint16(file, 4);
+    file.put(0x07); // Changed to 0x07 to test if 0x06 causes issues
+    file.put(0x00);
+    byte_pos += 4;
+    std::cout << "Wrote ENDSTR at " << byte_pos - 4 << std::endl;
+
+    // ENDLIB
+    write_uint16(file, 4);
+    file.put(0x04);
+    file.put(0x00);
+    byte_pos += 4;
+    std::cout << "Wrote ENDLIB at " << byte_pos - 4 << std::endl;
+
+    file.flush();
+    file.close();
+    if (!file.good()) {
+        std::cerr << "Error: File write failed for " << output_file << std::endl;
+        return 1;
+    }
+    std::cout << "Generated GDSII file: " << output_file << " with 4 layers" << std::endl;
     return 0;
 }

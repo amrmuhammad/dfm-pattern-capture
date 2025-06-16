@@ -1,19 +1,17 @@
-#ifndef DFMPATTERNCAPTUREAPPLICATION_H
-#define DFMPATTERNCAPTUREAPPLICATION_H
+#ifndef DFM_PATTERN_CAPTURE_APPLICATION_H
+#define DFM_PATTERN_CAPTURE_APPLICATION_H
 
 #include "CommandLineArgs.h"
-#include "LayoutFileReader.h"
 #include "DatabaseManager.h"
-#include "GeometryProcessor.h"
 
 class DFMPatternCaptureApplication {
 public:
-    int run(int argc, char* argv[]);
+    DFMPatternCaptureApplication(const CommandLineArgs& args);
+    void run();
 
 private:
-    void printWelcomeMessage(const CommandLineArgs& args);
-    int processPatterns(LayoutFileReader& reader, DatabaseManager& db_manager,
-                        const Layer& mask_layer, const CommandLineArgs& args);
+    CommandLineArgs args_;
+    DatabaseManager db_manager_;
 };
 
-#endif // DFMPATTERNCAPTUREAPPLICATION_H
+#endif

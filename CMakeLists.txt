@@ -1,33 +1,47 @@
 cmake_minimum_required(VERSION 3.12)
 project(DFMPatternCapture)
 
-# Set C++ standard for all targets
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Find required packages for dfm_pattern_capture
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(PQXX REQUIRED libpq)
+message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 
-# Add executable for DFM Pattern Capture Application
+option(DEBUG "Enable debug mode" OFF)
+
+if(DEBUG)
+    message(STATUS "Debug mode is ON")
+    # Add debug-related flags or logic here
+endif()
+
+if(CMAKE_BUILD_TYPE MATCHES Debug)
+    add_definitions(-DDEBUG)
+endif()
+
+find_package(PostgreSQL REQUIRED)
+
 add_executable(dfm_pattern_capture
     src/main.cpp
-    src/Geometry.cpp
+    ../shared/Geometry.cpp
     src/CommandLineArgs.cpp
-    src/LayoutFileReader.cpp
+    ../shared/LayoutFileReader.cpp
     src/GeometryProcessor.cpp
     src/DatabaseManager.cpp
     src/Utils.cpp
     src/DFMPatternCaptureApplication.cpp
 )
 
-# Link libraries and set options for dfm_pattern_capture
-target_link_libraries(dfm_pattern_capture ${PQXX_LIBRARIES})
-target_include_directories(dfm_pattern_capture PRIVATE ${PQXX_INCLUDE_DIRS})
-target_compile_options(dfm_pattern_capture PRIVATE ${PQXX_CFLAGS_OTHER} -Wall -Wextra -O2)
+target_link_libraries(dfm_pattern_capture PRIVATE PostgreSQL::PostgreSQL)
+target_include_directories(dfm_pattern_capture PRIVATE 
+    ${PostgreSQL_INCLUDE_DIRS}
+    ${CMAKE_SOURCE_DIR}/../shared
+)
+target_compile_options(dfm_pattern_capture PRIVATE -Wall -Wextra -O2)
 
-# Add executable for Generate Test GDS
-add_executable(generate_test_gds src/generate_test_gds.cpp)
-
-# Set compiler flags for generate_test_gds
+add_executable(generate_test_gds 
+    src/generate_test_gds.cpp
+    ../shared/Geometry.cpp
+)
+target_include_directories(generate_test_gds PRIVATE 
+    ${CMAKE_SOURCE_DIR}/../shared
+)
 target_compile_options(generate_test_gds PRIVATE -Wall -Wextra -O2)
